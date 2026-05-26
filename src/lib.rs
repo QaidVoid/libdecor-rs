@@ -51,6 +51,7 @@ mod event;
 mod frame;
 mod id;
 mod inner;
+mod shm;
 mod state;
 
 pub use configuration::Configuration;
@@ -59,6 +60,7 @@ pub use error::{Error, Result};
 pub use event::Event;
 pub use frame::Frame;
 pub use id::FrameId;
+pub use shm::ShmBuffer;
 pub use state::{Capabilities, ResizeEdge, State, WindowState, WmCapabilities};
 
 /// Opaque dispatcher type used as the type parameter of
