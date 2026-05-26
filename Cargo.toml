@@ -10,3 +10,7 @@ rustix = { version = "1.1.4", default-features = false, features = ["shm", "fs",
 thiserror = "2.0.18"
 wayland-client = "0.31.14"
 wayland-protocols = { version = "0.32.12", default-features = false, features = ["client", "unstable"] }
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"
