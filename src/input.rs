@@ -12,6 +12,7 @@
 
 use wayland_client::backend::ObjectId;
 use wayland_client::protocol::{wl_keyboard::WlKeyboard, wl_pointer::WlPointer, wl_touch::WlTouch};
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 
 use crate::id::FrameId;
 
@@ -55,6 +56,9 @@ pub(crate) struct SurfaceTarget {
 /// Per-seat input device handles.
 pub(crate) struct SeatState {
     pub(crate) pointer: Option<WlPointer>,
+    /// `wp_cursor_shape_device_v1` for the seat's pointer, if the
+    /// compositor advertises `wp_cursor_shape_manager_v1`.
+    pub(crate) cursor_shape: Option<WpCursorShapeDeviceV1>,
     #[allow(dead_code)]
     pub(crate) keyboard: Option<WlKeyboard>,
     #[allow(dead_code)]
@@ -65,6 +69,7 @@ impl SeatState {
     pub(crate) fn new() -> Self {
         Self {
             pointer: None,
+            cursor_shape: None,
             keyboard: None,
             touch: None,
         }

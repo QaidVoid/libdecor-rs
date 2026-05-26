@@ -24,6 +24,10 @@ use wayland_client::protocol::{
     wl_touch::WlTouch,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1::{self, WpCursorShapeDeviceV1},
+    wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+};
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
     zxdg_toplevel_decoration_v1::{self, ZxdgToplevelDecorationV1},
@@ -129,6 +133,7 @@ pub struct Inner {
     pub(crate) shm: WlShm,
     pub(crate) wm_base: XdgWmBase,
     pub(crate) decoration_mgr: Option<ZxdgDecorationManagerV1>,
+    pub(crate) cursor_shape_mgr: Option<WpCursorShapeManagerV1>,
     pub(crate) seats: HashMap<ObjectId, SeatHandle>,
 
     /// When `true`, libdecor will not request `xdg-decoration` mode at
@@ -333,18 +338,40 @@ impl Dispatch<WlSeat, ()> for Inner {
         } = event
         {
             let id = seat.id();
+            let has_pointer = caps.contains(wl_seat::Capability::Pointer);
+
+            let needs_pointer = has_pointer
+                && state
+                    .seats
+                    .get(&id)
+                    .map(|h| h.input.pointer.is_none())
+                    .unwrap_or(true);
+            let new_pointer = if needs_pointer {
+                let pointer = seat.get_pointer(qh, ());
+                let device = state
+                    .cursor_shape_mgr
+                    .as_ref()
+                    .map(|mgr| mgr.get_pointer(&pointer, qh, ()));
+                Some((pointer, device))
+            } else {
+                None
+            };
+
             let handle = state.seats.entry(id).or_insert_with(|| SeatHandle {
                 seat: seat.clone(),
                 input: SeatState::new(),
             });
 
-            let has_pointer = caps.contains(wl_seat::Capability::Pointer);
-            if has_pointer && handle.input.pointer.is_none() {
-                handle.input.pointer = Some(seat.get_pointer(qh, ()));
-            } else if !has_pointer
-                && let Some(p) = handle.input.pointer.take()
-            {
-                p.release();
+            if let Some((pointer, device)) = new_pointer {
+                handle.input.pointer = Some(pointer);
+                handle.input.cursor_shape = device;
+            } else if !has_pointer {
+                if let Some(p) = handle.input.pointer.take() {
+                    p.release();
+                }
+                if let Some(dev) = handle.input.cursor_shape.take() {
+                    dev.destroy();
+                }
             }
         }
     }
@@ -380,6 +407,7 @@ impl Dispatch<WlPointer, ()> for Inner {
                             button_down: false,
                         },
                     );
+                    apply_cursor_shape(state, &pointer_id, target.part, serial);
                     if target.part == DecorationPart::Titlebar {
                         update_titlebar_hover(state, target.frame, surface_x, surface_y);
                     }
@@ -464,6 +492,33 @@ impl Dispatch<WlPointer, ()> for Inner {
             _ => {}
         }
     }
+}
+
+fn apply_cursor_shape(state: &Inner, pointer_id: &ObjectId, part: DecorationPart, serial: u32) {
+    let Some(handle) = state.seats.values().find(|h| {
+        h.input
+            .pointer
+            .as_ref()
+            .map(|p| p.id() == *pointer_id)
+            .unwrap_or(false)
+    }) else {
+        return;
+    };
+    let Some(device) = handle.input.cursor_shape.as_ref() else {
+        return;
+    };
+    let shape = match part {
+        DecorationPart::Titlebar | DecorationPart::Content => {
+            wp_cursor_shape_device_v1::Shape::Default
+        }
+        DecorationPart::Border(BorderEdge::Top) | DecorationPart::Border(BorderEdge::Bottom) => {
+            wp_cursor_shape_device_v1::Shape::NsResize
+        }
+        DecorationPart::Border(BorderEdge::Left) | DecorationPart::Border(BorderEdge::Right) => {
+            wp_cursor_shape_device_v1::Shape::EwResize
+        }
+    };
+    device.set_shape(serial, shape);
 }
 
 fn update_titlebar_hover(state: &mut Inner, frame_id: FrameId, x: f64, y: f64) {
@@ -659,6 +714,8 @@ delegate_noop!(Inner: ignore WlSurface);
 delegate_noop!(Inner: ignore WlCallback);
 delegate_noop!(Inner: ignore WlKeyboard);
 delegate_noop!(Inner: ignore WlTouch);
+delegate_noop!(Inner: ignore WpCursorShapeManagerV1);
+delegate_noop!(Inner: ignore WpCursorShapeDeviceV1);
 
 /// Bind the globals libdecor cares about. Returns `Ok(Inner)` if the
 /// compositor provides at least `wl_compositor`, `wl_shm`, and
@@ -680,6 +737,7 @@ pub(crate) fn bind(
         .map_err(|_| Error::MissingGlobal("xdg_wm_base"))?;
     let subcompositor: Option<WlSubcompositor> = globals.bind(&qh, 1..=1, ()).ok();
     let decoration_mgr: Option<ZxdgDecorationManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
+    let cursor_shape_mgr: Option<WpCursorShapeManagerV1> = globals.bind(&qh, 1..=2, ()).ok();
 
     let mut seats = HashMap::new();
     for global in globals.contents().clone_list() {
@@ -709,6 +767,7 @@ pub(crate) fn bind(
         shm,
         wm_base,
         decoration_mgr,
+        cursor_shape_mgr,
         seats,
         force_csd,
         frames: HashMap::new(),
