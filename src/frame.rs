@@ -283,6 +283,7 @@ impl<'a> Frame<'a> {
     /// re-rendered at the new width and its `wl_subsurface` committed.
     pub fn commit(&mut self, state: &State, configuration: Option<&Configuration>) -> Result<()> {
         let id = self.id;
+        let compositor = self.ctx.inner.compositor.clone();
         let shm = self.ctx.inner.shm.clone();
         let qh = self.ctx.inner.qh.clone();
 
@@ -314,6 +315,7 @@ impl<'a> Frame<'a> {
                 slot.wm_capabilities_known,
             );
             dec.render(
+                &compositor,
                 &shm,
                 &qh,
                 state.content_width,

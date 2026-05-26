@@ -4,6 +4,12 @@
 //! place and push high-level [`Event`]s onto a queue that the public
 //! [`Context`](crate::Context) drains.
 
+// `ObjectId` uses interior mutability when wayland-backend is built with
+// the `client_system` feature (libwayland-client FFI mode). The lint
+// fires for HashMap<ObjectId, _> there but is harmless because the
+// mutable bits aren't part of the hash/eq contract.
+#![allow(clippy::mutable_key_type)]
+
 use std::collections::{HashMap, VecDeque};
 
 use wayland_client::backend::ObjectId;
@@ -14,6 +20,7 @@ use wayland_client::protocol::{
     wl_compositor::WlCompositor,
     wl_keyboard::WlKeyboard,
     wl_pointer::{self, WlPointer},
+    wl_region::WlRegion,
     wl_registry::WlRegistry,
     wl_seat::{self, WlSeat},
     wl_shm::WlShm,
@@ -433,7 +440,14 @@ impl Dispatch<WlPointer, ()> for Inner {
                         if let Some(dec) = slot.csd.as_mut() {
                             dec.hover = None;
                             dec.pressed = None;
-                            let _ = dec.render(&state.shm, &state.qh, cw, ch, title.as_deref());
+                            let _ = dec.render(
+                                &state.compositor,
+                                &state.shm,
+                                &state.qh,
+                                cw,
+                                ch,
+                                title.as_deref(),
+                            );
                         }
                     }
                 }
@@ -534,6 +548,7 @@ fn update_titlebar_hover(state: &mut Inner, frame_id: FrameId, x: f64, y: f64) {
     if new_hover != dec.hover {
         dec.hover = new_hover;
         let _ = dec.render(
+            &state.compositor,
             &state.shm,
             &state.qh,
             content_w,
@@ -563,6 +578,7 @@ fn handle_titlebar_press(
         let hit = dec.hit_test(x, y);
         dec.pressed = hit;
         let _ = dec.render(
+            &state.compositor,
             &state.shm,
             &state.qh,
             content_w,
@@ -604,6 +620,7 @@ fn handle_titlebar_release(state: &mut Inner, frame_id: FrameId, x: f64, y: f64)
     let released_on = dec.hit_test(x, y);
     let pressed = dec.pressed.take();
     let _ = dec.render(
+        &state.compositor,
         &state.shm,
         &state.qh,
         content_w,
@@ -714,6 +731,7 @@ delegate_noop!(Inner: ignore WlSurface);
 delegate_noop!(Inner: ignore WlCallback);
 delegate_noop!(Inner: ignore WlKeyboard);
 delegate_noop!(Inner: ignore WlTouch);
+delegate_noop!(Inner: ignore WlRegion);
 delegate_noop!(Inner: ignore WpCursorShapeManagerV1);
 delegate_noop!(Inner: ignore WpCursorShapeDeviceV1);
 
