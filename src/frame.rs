@@ -9,9 +9,23 @@ use wayland_protocols::xdg::shell::client::{xdg_surface::XdgSurface, xdg_topleve
 
 use crate::configuration::Configuration;
 use crate::context::Context;
+use crate::csd::ButtonSet;
 use crate::error::{Error, Result};
 use crate::id::FrameId;
 use crate::state::{Capabilities, ResizeEdge, State, WindowState, WmCapabilities};
+
+fn compute_buttons(capabilities: Capabilities, wm: WmCapabilities, wm_known: bool) -> ButtonSet {
+    let close = capabilities.contains(Capabilities::CLOSE);
+    let maximize = capabilities.contains(Capabilities::FULLSCREEN)
+        && (!wm_known || wm.contains(WmCapabilities::MAXIMIZE));
+    let minimize = capabilities.contains(Capabilities::MINIMIZE)
+        && (!wm_known || wm.contains(WmCapabilities::MINIMIZE));
+    ButtonSet {
+        close,
+        maximize,
+        minimize,
+    }
+}
 
 /// Borrowed reference to a frame, returned by
 /// [`Context::frame`](crate::Context::frame).
@@ -265,8 +279,13 @@ impl<'a> Frame<'a> {
     ///
     /// When `configuration` is `Some`, the configure serial is
     /// acknowledged. The content size in `state` becomes the new applied
-    /// size.
+    /// size. If libdecor is drawing the decorations, the titlebar is
+    /// re-rendered at the new width and its `wl_subsurface` committed.
     pub fn commit(&mut self, state: &State, configuration: Option<&Configuration>) -> Result<()> {
+        let id = self.id;
+        let shm = self.ctx.inner.shm.clone();
+        let qh = self.ctx.inner.qh.clone();
+
         let slot = self.slot_mut()?;
         if let Some(cfg) = configuration {
             slot.xdg_surface.ack_configure(cfg.serial);
@@ -275,15 +294,37 @@ impl<'a> Frame<'a> {
             }
         }
         slot.content_size = (state.content_width, state.content_height);
+
+        let (top, bottom, left, right) = slot.decoration_overhead();
+        if top > 0 || bottom > 0 || left > 0 || right > 0 {
+            slot.xdg_surface.set_window_geometry(
+                -left,
+                -top,
+                state.content_width + left + right,
+                state.content_height + top + bottom,
+            );
+        }
+
+        if let Some(dec) = slot.csd.as_mut() {
+            dec.active = slot.window_state.contains(WindowState::ACTIVE);
+            dec.buttons = compute_buttons(
+                slot.capabilities,
+                slot.wm_capabilities,
+                slot.wm_capabilities_known,
+            );
+            dec.render(&shm, &qh, state.content_width, state.content_height)?;
+        }
+
+        let _ = id;
         Ok(())
     }
 
     /// Translate surface-local coordinates to frame-local coordinates.
     ///
     /// For a frame without client-side decorations these are identical;
-    /// future CSD support will offset by the titlebar height.
+    /// with CSD active, the titlebar contributes a vertical offset.
     pub fn translate_coordinate(&self, surface_x: i32, surface_y: i32) -> Result<(i32, i32)> {
-        let _ = self.slot()?;
-        Ok((surface_x, surface_y))
+        let slot = self.slot()?;
+        Ok((surface_x, surface_y + slot.top_decoration()))
     }
 }

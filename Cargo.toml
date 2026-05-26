@@ -9,7 +9,7 @@ license = "MIT"
 rustix = { version = "1.1.4", default-features = false, features = ["shm", "fs", "mm", "event"] }
 thiserror = "2.0.18"
 wayland-client = "0.31.14"
-wayland-protocols = { version = "0.32.12", default-features = false, features = ["client", "unstable"] }
+wayland-protocols = { version = "0.32.12", default-features = false, features = ["client", "staging", "unstable"] }
 
 [[example]]
 name = "demo"

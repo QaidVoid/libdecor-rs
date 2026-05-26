@@ -16,7 +16,10 @@ use crate::error::{Error, Result};
 use crate::event::Event;
 use crate::frame::Frame;
 use crate::id::FrameId;
-use crate::inner::{FrameKey, FrameSlot, Inner, PendingConfigure, bind};
+use crate::inner::{
+    FrameKey, FrameSlot, Inner, PendingConfigure, bind, register_surface, unregister_surface,
+};
+use crate::input::{DecorationPart, SurfaceTarget};
 use crate::state::{Capabilities, WindowState, WmCapabilities};
 
 /// libdecor context: a Wayland connection plus the bookkeeping required
@@ -43,17 +46,32 @@ impl Context {
     }
 
     /// Whether the compositor advertised `zxdg_decoration_manager_v1`.
-    ///
-    /// When `false`, libdecor-rs cannot request server-side decorations.
-    /// Until client-side decoration drawing is implemented, such windows
-    /// will appear undecorated.
     pub fn supports_server_side_decorations(&self) -> bool {
         self.inner.decoration_mgr.is_some()
     }
 
-    /// Borrow the Wayland seats discovered at startup.
-    pub fn seats(&self) -> &[wayland_client::protocol::wl_seat::WlSeat] {
-        &self.inner.seats
+    /// Force libdecor to draw its own client-side decorations even when
+    /// the compositor claims to support server-side decorations.
+    ///
+    /// Useful for tiling Wayland compositors that advertise
+    /// `xdg-decoration` but do not actually draw decorations, leaving
+    /// the window naked otherwise. The environment variable
+    /// `LIBDECOR_FORCE_CSD` (any value) sets this at startup.
+    ///
+    /// This must be called before [`Self::create_frame`] for the
+    /// setting to take effect on that frame.
+    pub fn force_client_side_decorations(&mut self, force: bool) {
+        self.inner.force_csd = force;
+    }
+
+    /// Whether libdecor is currently forcing client-side decorations.
+    pub fn is_forcing_client_side_decorations(&self) -> bool {
+        self.inner.force_csd
+    }
+
+    /// Iterate over the Wayland seats currently known to libdecor.
+    pub fn seats(&self) -> impl Iterator<Item = &wayland_client::protocol::wl_seat::WlSeat> {
+        self.inner.seat_proxies()
     }
 
     /// Returns the underlying [`wayland_client::Connection`]. Useful for
@@ -150,11 +168,15 @@ impl Context {
             .get_xdg_surface(&wl_surface, &qh, FrameKey(id));
         let xdg_toplevel = xdg_surface.get_toplevel(&qh, FrameKey(id));
 
-        let decoration = self.inner.decoration_mgr.as_ref().map(|mgr| {
-            let dec = mgr.get_toplevel_decoration(&xdg_toplevel, &qh, FrameKey(id));
-            dec.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
-            dec
-        });
+        let decoration = if self.inner.force_csd {
+            None
+        } else {
+            self.inner.decoration_mgr.as_ref().map(|mgr| {
+                let dec = mgr.get_toplevel_decoration(&xdg_toplevel, &qh, FrameKey(id));
+                dec.set_mode(zxdg_toplevel_decoration_v1::Mode::ClientSide);
+                dec
+            })
+        };
 
         let slot = FrameSlot {
             wl_surface,
@@ -167,13 +189,23 @@ impl Context {
             max_size: None,
             capabilities: Capabilities::full(),
             wm_capabilities: WmCapabilities::NONE,
+            wm_capabilities_known: false,
             window_state: WindowState::NONE,
             content_size: (0, 0),
             decoration_mode: None,
+            csd: None,
             visible: true,
             mapped: false,
             pending: PendingConfigure::default(),
         };
+        register_surface(
+            &mut self.inner,
+            &slot.wl_surface,
+            SurfaceTarget {
+                frame: FrameId(id),
+                part: DecorationPart::Content,
+            },
+        );
         self.inner.frames.insert(id, slot);
         Ok(FrameId(id))
     }
@@ -190,11 +222,19 @@ impl Context {
     /// Destroy a frame and free the associated Wayland resources.
     pub fn destroy_frame(&mut self, id: FrameId) -> Result<()> {
         let slot = self.inner.frames.remove(&id.0).ok_or(Error::UnknownFrame)?;
+        if let Some(csd) = slot.csd {
+            unregister_surface(&mut self.inner, &csd.titlebar.wl_surface);
+            for border in &csd.borders {
+                unregister_surface(&mut self.inner, &border.wl_surface);
+            }
+            csd.destroy();
+        }
         if let Some(dec) = slot.decoration {
             dec.destroy();
         }
         slot.xdg_toplevel.destroy();
         slot.xdg_surface.destroy();
+        unregister_surface(&mut self.inner, &slot.wl_surface);
         slot.wl_surface.destroy();
         Ok(())
     }

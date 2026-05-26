@@ -46,11 +46,13 @@
 
 mod configuration;
 mod context;
+mod csd;
 mod error;
 mod event;
 mod frame;
 mod id;
 mod inner;
+mod input;
 mod shm;
 mod state;
 
