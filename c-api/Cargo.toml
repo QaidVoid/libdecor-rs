@@ -1,0 +1,17 @@
+[package]
+name = "libdecor-c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C ABI shared library for libdecor-rs"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "decor_0"
+path = "src/lib.rs"
+
+[dependencies.libdecor_rs]
+package = "libdecor"
+path = ".."
+features = ["system"]

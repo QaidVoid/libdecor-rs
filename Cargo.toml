@@ -1,9 +1,23 @@
-[package]
-name = "libdecor"
+[workspace]
+members = [".", "c-api"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Client-side decorations for Wayland, in pure Rust"
 license = "MIT"
+description = "Client-side decorations for Wayland, in pure Rust"
+
+[package]
+name = "libdecor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+name = "libdecor"
+path = "src/lib.rs"
 
 [dependencies]
 ab_glyph = "0.2.32"
@@ -12,6 +26,17 @@ thiserror = "2.0.18"
 wayland-client = "0.31.14"
 wayland-protocols = { version = "0.32.12", default-features = false, features = ["client", "staging", "unstable"] }
 
+[features]
+default = []
+system = ["wayland-client/system", "wayland-client/dlopen"]
+
 [[example]]
 name = "demo"
 path = "examples/demo.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

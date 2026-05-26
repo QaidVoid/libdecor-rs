@@ -45,6 +45,27 @@ impl Context {
         Ok(Self { conn, queue, inner })
     }
 
+    /// Build a context that wraps an existing `*mut wl_display` owned by
+    /// another library (typically the application linking against
+    /// libdecor's C ABI).
+    ///
+    /// Requires the `system` Cargo feature. The caller is responsible
+    /// for keeping the display pointer valid for the lifetime of the
+    /// returned [`Context`].
+    ///
+    /// # Safety
+    ///
+    /// `display` must be a valid `*mut wl_display` obtained from
+    /// libwayland-client. The display must not be disconnected while
+    /// this context is alive.
+    #[cfg(feature = "system")]
+    pub unsafe fn from_display(display: *mut std::ffi::c_void) -> Result<Self> {
+        let backend =
+            unsafe { wayland_client::backend::Backend::from_foreign_display(display.cast()) };
+        let conn = Connection::from_backend(backend);
+        Self::from_connection(conn)
+    }
+
     /// Whether the compositor advertised `zxdg_decoration_manager_v1`.
     pub fn supports_server_side_decorations(&self) -> bool {
         self.inner.decoration_mgr.is_some()
@@ -158,10 +179,34 @@ impl Context {
     /// further configure or interact with the window. The window will
     /// not actually appear until [`Frame::map`] is called.
     pub fn create_frame(&mut self) -> Result<FrameId> {
+        let wl_surface = self
+            .inner
+            .compositor
+            .create_surface(&self.inner.qh.clone(), ());
+        self.decorate_inner(wl_surface, true)
+    }
+
+    /// Decorate a Wayland surface that the application already owns.
+    ///
+    /// Use this when libdecor needs to wrap a `wl_surface` created by
+    /// another component (for example, a C application calling through
+    /// the FFI shim). The application retains ownership of the surface;
+    /// libdecor will not destroy it when the frame is freed.
+    pub fn decorate(
+        &mut self,
+        wl_surface: wayland_client::protocol::wl_surface::WlSurface,
+    ) -> Result<FrameId> {
+        self.decorate_inner(wl_surface, false)
+    }
+
+    fn decorate_inner(
+        &mut self,
+        wl_surface: wayland_client::protocol::wl_surface::WlSurface,
+        owns_wl_surface: bool,
+    ) -> Result<FrameId> {
         let id = self.inner.allocate_frame_id();
         let qh = self.inner.qh.clone();
 
-        let wl_surface = self.inner.compositor.create_surface(&qh, ());
         let xdg_surface = self
             .inner
             .wm_base
@@ -180,6 +225,7 @@ impl Context {
 
         let slot = FrameSlot {
             wl_surface,
+            owns_wl_surface,
             xdg_surface,
             xdg_toplevel,
             decoration,
@@ -235,7 +281,9 @@ impl Context {
         slot.xdg_toplevel.destroy();
         slot.xdg_surface.destroy();
         unregister_surface(&mut self.inner, &slot.wl_surface);
-        slot.wl_surface.destroy();
+        if slot.owns_wl_surface {
+            slot.wl_surface.destroy();
+        }
         Ok(())
     }
 }

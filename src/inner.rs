@@ -69,6 +69,10 @@ pub(crate) struct PendingConfigure {
 /// Everything libdecor tracks for a single window.
 pub(crate) struct FrameSlot {
     pub(crate) wl_surface: WlSurface,
+    /// `true` when libdecor created the `wl_surface` itself and is
+    /// therefore responsible for destroying it. When `false`, the
+    /// application (typically a C ABI consumer) retains ownership.
+    pub(crate) owns_wl_surface: bool,
     pub(crate) xdg_surface: XdgSurface,
     pub(crate) xdg_toplevel: XdgToplevel,
     pub(crate) decoration: Option<ZxdgToplevelDecorationV1>,
