@@ -341,7 +341,9 @@ impl Dispatch<WlSeat, ()> for Inner {
             let has_pointer = caps.contains(wl_seat::Capability::Pointer);
             if has_pointer && handle.input.pointer.is_none() {
                 handle.input.pointer = Some(seat.get_pointer(qh, ()));
-            } else if !has_pointer && let Some(p) = handle.input.pointer.take() {
+            } else if !has_pointer
+                && let Some(p) = handle.input.pointer.take()
+            {
                 p.release();
             }
         }
@@ -399,10 +401,11 @@ impl Dispatch<WlPointer, ()> for Inner {
                         && let Some(slot) = state.frames.get_mut(&target.frame.0)
                     {
                         let (cw, ch) = slot.content_size;
+                        let title = slot.title.clone();
                         if let Some(dec) = slot.csd.as_mut() {
                             dec.hover = None;
                             dec.pressed = None;
-                            let _ = dec.render(&state.shm, &state.qh, cw, ch);
+                            let _ = dec.render(&state.shm, &state.qh, cw, ch, title.as_deref());
                         }
                     }
                 }
@@ -468,13 +471,20 @@ fn update_titlebar_hover(state: &mut Inner, frame_id: FrameId, x: f64, y: f64) {
         return;
     };
     let (content_w, content_h) = slot.content_size;
+    let title = slot.title.clone();
     let Some(dec) = slot.csd.as_mut() else {
         return;
     };
     let new_hover = dec.hit_test(x, y);
     if new_hover != dec.hover {
         dec.hover = new_hover;
-        let _ = dec.render(&state.shm, &state.qh, content_w, content_h);
+        let _ = dec.render(
+            &state.shm,
+            &state.qh,
+            content_w,
+            content_h,
+            title.as_deref(),
+        );
     }
 }
 
@@ -491,12 +501,19 @@ fn handle_titlebar_press(
             return;
         };
         let (content_w, content_h) = slot.content_size;
+        let title = slot.title.clone();
         let Some(dec) = slot.csd.as_mut() else {
             return;
         };
         let hit = dec.hit_test(x, y);
         dec.pressed = hit;
-        let _ = dec.render(&state.shm, &state.qh, content_w, content_h);
+        let _ = dec.render(
+            &state.shm,
+            &state.qh,
+            content_w,
+            content_h,
+            title.as_deref(),
+        );
         hit
     };
 
@@ -525,12 +542,19 @@ fn handle_titlebar_release(state: &mut Inner, frame_id: FrameId, x: f64, y: f64)
         return;
     };
     let (content_w, content_h) = slot.content_size;
+    let title = slot.title.clone();
     let Some(dec) = slot.csd.as_mut() else {
         return;
     };
     let released_on = dec.hit_test(x, y);
     let pressed = dec.pressed.take();
-    let _ = dec.render(&state.shm, &state.qh, content_w, content_h);
+    let _ = dec.render(
+        &state.shm,
+        &state.qh,
+        content_w,
+        content_h,
+        title.as_deref(),
+    );
     if let (Some(p), Some(r)) = (pressed, released_on)
         && p == r
     {

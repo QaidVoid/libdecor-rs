@@ -6,6 +6,7 @@ description = "Client-side decorations for Wayland, in pure Rust"
 license = "MIT"
 
 [dependencies]
+ab_glyph = "0.2.32"
 rustix = { version = "1.1.4", default-features = false, features = ["shm", "fs", "mm", "event"] }
 thiserror = "2.0.18"
 wayland-client = "0.31.14"

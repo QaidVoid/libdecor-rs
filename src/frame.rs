@@ -305,6 +305,7 @@ impl<'a> Frame<'a> {
             );
         }
 
+        let title = slot.title.clone();
         if let Some(dec) = slot.csd.as_mut() {
             dec.active = slot.window_state.contains(WindowState::ACTIVE);
             dec.buttons = compute_buttons(
@@ -312,7 +313,13 @@ impl<'a> Frame<'a> {
                 slot.wm_capabilities,
                 slot.wm_capabilities_known,
             );
-            dec.render(&shm, &qh, state.content_width, state.content_height)?;
+            dec.render(
+                &shm,
+                &qh,
+                state.content_width,
+                state.content_height,
+                title.as_deref(),
+            )?;
         }
 
         let _ = id;

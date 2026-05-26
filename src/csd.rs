@@ -163,6 +163,7 @@ impl Decoration {
         qh: &QueueHandle<crate::inner::Inner>,
         content_width: i32,
         content_height: i32,
+        title: Option<&str>,
     ) -> Result<()> {
         if content_width <= 0 || content_height <= 0 {
             return Ok(());
@@ -180,7 +181,7 @@ impl Decoration {
             qh,
             content_width,
             TITLEBAR_HEIGHT,
-            |pixels, w, h| draw_titlebar(pixels, w, h, active, hover, pressed, buttons),
+            |pixels, w, h| draw_titlebar(pixels, w, h, active, hover, pressed, buttons, title),
         )?;
 
         let border_color = if self.active {
@@ -345,7 +346,8 @@ fn button_x(width: i32, idx: i32) -> i32 {
     right_edge - (idx + 1) * BUTTON_SIZE - idx * BUTTON_GAP
 }
 
-/// Paint the titlebar background and visible buttons into `pixels`.
+/// Paint the titlebar background, title text, and visible buttons.
+#[allow(clippy::too_many_arguments)]
 fn draw_titlebar(
     pixels: &mut [u32],
     width: i32,
@@ -354,6 +356,7 @@ fn draw_titlebar(
     hover: Option<ButtonKind>,
     pressed: Option<ButtonKind>,
     buttons: ButtonSet,
+    title: Option<&str>,
 ) {
     let (bar_color, fg, hover_color, pressed_color, close_pressed) = if active {
         (
@@ -374,6 +377,23 @@ fn draw_titlebar(
     };
 
     fill_rect(pixels, width, 0, 0, width, height, bar_color);
+
+    if let Some(title) = title.filter(|s| !s.is_empty()) {
+        let font_size = 14.0;
+        let measured = crate::font::measure(title, font_size);
+        let visible_count = buttons.visible_right_to_left().count() as i32;
+        let buttons_left = if visible_count > 0 {
+            button_x(width, visible_count - 1)
+        } else {
+            width
+        };
+        let available = (buttons_left - 12).max(0);
+        if measured > 0 && available > 0 {
+            let x = ((width - measured) / 2).clamp(12, available.saturating_sub(measured).max(12));
+            let y_baseline = (height + (font_size * 0.7) as i32) / 2;
+            crate::font::draw_text(pixels, width, height, x, y_baseline, font_size, title, fg);
+        }
+    }
 
     for (idx, kind) in buttons.visible_right_to_left().enumerate() {
         let bx = button_x(width, idx as i32);

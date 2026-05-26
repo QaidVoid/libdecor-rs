@@ -49,6 +49,7 @@ mod context;
 mod csd;
 mod error;
 mod event;
+mod font;
 mod frame;
 mod id;
 mod inner;
