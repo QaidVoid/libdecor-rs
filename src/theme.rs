@@ -11,8 +11,7 @@
 //! 2. `gsettings org.gnome.desktop.interface color-scheme` (GNOME 42+).
 //! 3. `gsettings org.gnome.desktop.interface gtk-theme` (older GNOME).
 //! 4. GTK 3/4 `settings.ini` files (non-GNOME GTK desktops).
-//! 5. KDE `kdeglobals` `ColorScheme`.
-//! 6. Defaults to **dark** when nothing is found.
+//! 5. Defaults to **dark** when nothing is found.
 
 use std::env;
 use std::fs;
@@ -81,10 +80,6 @@ fn prefer_dark() -> bool {
     }
 
     if gtk_prefer_dark() {
-        return true;
-    }
-
-    if kde_prefer_dark() {
         return true;
     }
 
@@ -164,23 +159,6 @@ fn ini_contains_dark_preference(content: &str) -> bool {
             if key == "gtk-theme-name" && value.contains("dark") {
                 return true;
             }
-        }
-    }
-    false
-}
-
-/// Check KDE `kdeglobals` for a dark colour scheme.
-fn kde_prefer_dark() -> bool {
-    for config_dir in xdg_config_dirs() {
-        let path = config_dir.join("kdeglobals");
-        if let Ok(content) = fs::read_to_string(&path)
-            && let Some((key, value)) = content
-                .lines()
-                .map(|l| l.trim())
-                .find_map(|l| l.split_once('='))
-            && key.trim() == "ColorScheme"
-        {
-            return value.trim().to_ascii_lowercase().contains("dark");
         }
     }
     false
