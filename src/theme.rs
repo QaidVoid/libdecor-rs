@@ -139,12 +139,9 @@ fn gnome_color_scheme() -> Option<bool> {
 
 /// Check GTK settings INI files for a dark-theme preference.
 fn gtk_prefer_dark() -> bool {
-    if let Some(home) = env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        for path in [
-            home.join(".config/gtk-4.0/settings.ini"),
-            home.join(".config/gtk-3.0/settings.ini"),
-        ] {
+    for config_dir in xdg_config_dirs() {
+        for ver in &["gtk-4.0", "gtk-3.0"] {
+            let path = config_dir.join(ver).join("settings.ini");
             if let Ok(content) = fs::read_to_string(&path)
                 && ini_contains_dark_preference(&content)
             {
@@ -152,23 +149,6 @@ fn gtk_prefer_dark() -> bool {
             }
         }
     }
-
-    if let Ok(xdg) = env::var("XDG_CONFIG_DIRS") {
-        for dir in xdg.split(':') {
-            if dir.is_empty() {
-                continue;
-            }
-            for ver in &["gtk-4.0", "gtk-3.0"] {
-                let path = PathBuf::from(dir).join(ver).join("settings.ini");
-                if let Ok(content) = fs::read_to_string(&path)
-                    && ini_contains_dark_preference(&content)
-                {
-                    return true;
-                }
-            }
-        }
-    }
-
     false
 }
 
@@ -191,22 +171,47 @@ fn ini_contains_dark_preference(content: &str) -> bool {
 
 /// Check KDE `kdeglobals` for a dark colour scheme.
 fn kde_prefer_dark() -> bool {
-    let path = env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|h| h.join(".config/kdeglobals"))
-        .unwrap_or_else(|| PathBuf::from("/etc/xdg/kdeglobals"));
-
-    let Ok(content) = fs::read_to_string(&path) else {
-        return false;
-    };
-
-    for line in content.lines() {
-        if let Some((key, value)) = line.trim().split_once('=')
+    for config_dir in xdg_config_dirs() {
+        let path = config_dir.join("kdeglobals");
+        if let Ok(content) = fs::read_to_string(&path)
+            && let Some((key, value)) = content
+                .lines()
+                .map(|l| l.trim())
+                .find_map(|l| l.split_once('='))
             && key.trim() == "ColorScheme"
         {
             return value.trim().to_ascii_lowercase().contains("dark");
         }
     }
-
     false
+}
+
+/// Return the XDG config directories in priority order:
+/// `$XDG_CONFIG_HOME` (default `~/.config`) first, then each colon-
+/// separated entry in `$XDG_CONFIG_DIRS` (default `/etc/xdg`).
+fn xdg_config_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    dirs.push(
+        env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .map(|h| h.join(".config"))
+                    .unwrap_or_else(|| PathBuf::from(".config"))
+            }),
+    );
+
+    if let Ok(xdg) = env::var("XDG_CONFIG_DIRS") {
+        for entry in xdg.split(':') {
+            if !entry.is_empty() {
+                dirs.push(PathBuf::from(entry));
+            }
+        }
+    } else {
+        dirs.push(PathBuf::from("/etc/xdg"));
+    }
+
+    dirs
 }
