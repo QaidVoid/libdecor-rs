@@ -46,10 +46,10 @@ use wayland_protocols::xdg::shell::client::{
 };
 
 use crate::configuration::Configuration;
-use crate::csd::{BORDER_WIDTH, Decoration, TITLEBAR_HEIGHT};
+use crate::csd::{Decoration, TITLEBAR_HEIGHT};
 use crate::event::Event;
 use crate::id::FrameId;
-use crate::input::{BorderEdge, DecorationPart, PointerFocus, SeatState, SurfaceTarget};
+use crate::input::{DecorationPart, PointerFocus, SeatState, SurfaceTarget};
 use crate::state::{Capabilities, WindowState, WmCapabilities};
 
 /// User-data attached to per-frame proxies. Carries the frame slot key
@@ -110,19 +110,14 @@ impl FrameSlot {
     /// active.
     pub(crate) fn decoration_overhead(&self) -> (i32, i32, i32, i32) {
         if self.csd.is_some() {
-            (
-                TITLEBAR_HEIGHT + BORDER_WIDTH,
-                BORDER_WIDTH,
-                BORDER_WIDTH,
-                BORDER_WIDTH,
-            )
+            (TITLEBAR_HEIGHT, 0, 0, 0)
         } else {
             (0, 0, 0, 0)
         }
     }
 
-    /// Vertical decoration above the content surface (titlebar + top
-    /// border, when CSD is active).
+    /// Vertical decoration above the content surface (titlebar, when
+    /// CSD is active).
     pub(crate) fn top_decoration(&self) -> i32 {
         self.decoration_overhead().0
     }
@@ -444,14 +439,7 @@ impl Dispatch<WlPointer, ()> for Inner {
                         if let Some(dec) = slot.csd.as_mut() {
                             dec.hover = None;
                             dec.pressed = None;
-                            let _ = dec.render(
-                                &state.compositor,
-                                &state.shm,
-                                &state.qh,
-                                cw,
-                                ch,
-                                title.as_deref(),
-                            );
+                            let _ = dec.render(&state.shm, &state.qh, cw, ch, title.as_deref());
                         }
                     }
                 }
@@ -499,11 +487,6 @@ impl Dispatch<WlPointer, ()> for Inner {
                             handle_titlebar_release(state, target.frame, x, y);
                         }
                     }
-                    DecorationPart::Border(edge) => {
-                        if pressed {
-                            handle_border_press(state, target.frame, &pointer_id, edge, serial);
-                        }
-                    }
                     DecorationPart::Content => {}
                 }
             }
@@ -529,12 +512,6 @@ fn apply_cursor_shape(state: &Inner, pointer_id: &ObjectId, part: DecorationPart
         DecorationPart::Titlebar | DecorationPart::Content => {
             wp_cursor_shape_device_v1::Shape::Default
         }
-        DecorationPart::Border(BorderEdge::Top) | DecorationPart::Border(BorderEdge::Bottom) => {
-            wp_cursor_shape_device_v1::Shape::NsResize
-        }
-        DecorationPart::Border(BorderEdge::Left) | DecorationPart::Border(BorderEdge::Right) => {
-            wp_cursor_shape_device_v1::Shape::EwResize
-        }
     };
     device.set_shape(serial, shape);
 }
@@ -552,7 +529,6 @@ fn update_titlebar_hover(state: &mut Inner, frame_id: FrameId, x: f64, y: f64) {
     if new_hover != dec.hover {
         dec.hover = new_hover;
         let _ = dec.render(
-            &state.compositor,
             &state.shm,
             &state.qh,
             content_w,
@@ -582,7 +558,6 @@ fn handle_titlebar_press(
         let hit = dec.hit_test(x, y);
         dec.pressed = hit;
         let _ = dec.render(
-            &state.compositor,
             &state.shm,
             &state.qh,
             content_w,
@@ -624,7 +599,6 @@ fn handle_titlebar_release(state: &mut Inner, frame_id: FrameId, x: f64, y: f64)
     let released_on = dec.hit_test(x, y);
     let pressed = dec.pressed.take();
     let _ = dec.render(
-        &state.compositor,
         &state.shm,
         &state.qh,
         content_w,
@@ -651,39 +625,6 @@ fn handle_titlebar_release(state: &mut Inner, frame_id: FrameId, x: f64, y: f64)
             }
         }
     }
-}
-
-fn handle_border_press(
-    state: &mut Inner,
-    frame_id: FrameId,
-    pointer_id: &ObjectId,
-    edge: BorderEdge,
-    serial: u32,
-) {
-    let seat = state
-        .seats
-        .values()
-        .find(|h| {
-            h.input
-                .pointer
-                .as_ref()
-                .map(|p| p.id() == *pointer_id)
-                .unwrap_or(false)
-        })
-        .map(|h| h.seat.clone());
-    let Some(seat) = seat else {
-        return;
-    };
-    let Some(slot) = state.frames.get(&frame_id.0) else {
-        return;
-    };
-    let xdg_edge = match edge {
-        BorderEdge::Top => xdg_toplevel::ResizeEdge::Top,
-        BorderEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
-        BorderEdge::Left => xdg_toplevel::ResizeEdge::Left,
-        BorderEdge::Right => xdg_toplevel::ResizeEdge::Right,
-    };
-    slot.xdg_toplevel.resize(&seat, serial, xdg_edge);
 }
 
 fn decode_states(raw: &[u8]) -> WindowState {
@@ -842,7 +783,13 @@ pub(crate) fn ensure_csd(state: &mut Inner, frame_id: FrameId) -> bool {
         return false;
     };
     let parent = state.frames.get(&key).unwrap().wl_surface.clone();
-    let dec = Decoration::new(&state.compositor, &subcompositor, &parent, &state.qh);
+    let dec = Decoration::new(
+        &state.compositor,
+        &subcompositor,
+        &parent,
+        &state.qh,
+        crate::theme::palette(),
+    );
     let titlebar_id = dec.titlebar_surface_id();
     state.surface_targets.insert(
         titlebar_id,
@@ -851,21 +798,6 @@ pub(crate) fn ensure_csd(state: &mut Inner, frame_id: FrameId) -> bool {
             part: DecorationPart::Titlebar,
         },
     );
-    for edge in [
-        BorderEdge::Top,
-        BorderEdge::Bottom,
-        BorderEdge::Left,
-        BorderEdge::Right,
-    ] {
-        let id = dec.border_surface_id(edge);
-        state.surface_targets.insert(
-            id,
-            SurfaceTarget {
-                frame: frame_id,
-                part: DecorationPart::Border(edge),
-            },
-        );
-    }
     state.frames.get_mut(&key).unwrap().csd = Some(dec);
     true
 }

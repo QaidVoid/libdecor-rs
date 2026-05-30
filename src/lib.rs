@@ -56,6 +56,7 @@ mod inner;
 mod input;
 mod shm;
 mod state;
+mod theme;
 
 pub use configuration::Configuration;
 pub use context::Context;

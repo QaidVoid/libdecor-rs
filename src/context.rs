@@ -270,9 +270,6 @@ impl Context {
         let slot = self.inner.frames.remove(&id.0).ok_or(Error::UnknownFrame)?;
         if let Some(csd) = slot.csd {
             unregister_surface(&mut self.inner, &csd.titlebar.wl_surface);
-            for border in &csd.borders {
-                unregister_surface(&mut self.inner, &border.wl_surface);
-            }
             csd.destroy();
         }
         if let Some(dec) = slot.decoration {
