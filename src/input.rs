@@ -25,6 +25,21 @@ pub(crate) enum DecorationPart {
     Content,
     /// The titlebar subsurface above the content.
     Titlebar,
+    /// One of the four invisible resize border subsurfaces.
+    Border(BorderEdge),
+}
+
+/// Edge a resize border belongs to.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum BorderEdge {
+    /// Top border above the titlebar.
+    Top,
+    /// Bottom border below the content.
+    Bottom,
+    /// Left border alongside the content.
+    Left,
+    /// Right border alongside the content.
+    Right,
 }
 
 /// Mapping from a `wl_surface` (by id) to the frame and decoration

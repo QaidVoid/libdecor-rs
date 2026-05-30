@@ -14,11 +14,18 @@ use wayland_client::protocol::{
 };
 
 use crate::error::Result;
+use crate::input::BorderEdge;
 use crate::shm::ShmBuffer;
 use crate::theme::Palette;
 
 /// Height of the titlebar in surface-local pixels.
 pub(crate) const TITLEBAR_HEIGHT: i32 = 32;
+
+/// Thickness of the invisible resize grips around the window.
+pub(crate) const BORDER_WIDTH: i32 = 4;
+
+/// Size of the corner hit-zone for diagonal resize, in pixels.
+pub(crate) const CORNER_SIZE: i32 = 20;
 
 /// How far the drop shadow extends from the window frame, in pixels.
 const SHADOW_RADIUS: i32 = 16;
@@ -48,6 +55,9 @@ pub(crate) struct Decoration {
     /// Shadow subsurface, stacked below all other decoration surfaces.
     pub(crate) shadow: Subsurface,
     pub(crate) titlebar: Subsurface,
+    /// Invisible resize grips: indexed by [`BorderEdge`] in the order
+    /// `[Top, Bottom, Left, Right]`.
+    pub(crate) borders: [Subsurface; 4],
     /// Colour palette selected from the system theme.
     palette: &'static Palette,
     /// Whether the window currently has keyboard focus.
@@ -121,11 +131,22 @@ impl Decoration {
         shadow.wl_surface.commit();
         empty_region.destroy();
 
+        let borders = [
+            make_subsurface(compositor, subcompositor, parent, qh),
+            make_subsurface(compositor, subcompositor, parent, qh),
+            make_subsurface(compositor, subcompositor, parent, qh),
+            make_subsurface(compositor, subcompositor, parent, qh),
+        ];
+        for border in &borders {
+            border.wl_subsurface.place_below(&shadow.wl_surface);
+        }
+
         let titlebar = make_subsurface(compositor, subcompositor, parent, qh);
 
         Self {
             shadow,
             titlebar,
+            borders,
             palette,
             active: false,
             hover: None,
@@ -135,7 +156,10 @@ impl Decoration {
     }
 
     pub(crate) fn destroy(self) {
-        for sub in std::iter::once(self.shadow).chain(std::iter::once(self.titlebar)) {
+        for sub in std::iter::once(self.shadow)
+            .chain(self.borders)
+            .chain(std::iter::once(self.titlebar))
+        {
             if let Some(rb) = sub.current {
                 rb.buffer.destroy();
                 rb.pool.destroy();
@@ -149,6 +173,12 @@ impl Decoration {
     pub(crate) fn titlebar_surface_id(&self) -> ObjectId {
         use wayland_client::Proxy;
         self.titlebar.wl_surface.id()
+    }
+
+    /// Surface id for the border at the given edge.
+    pub(crate) fn border_surface_id(&self, edge: BorderEdge) -> ObjectId {
+        use wayland_client::Proxy;
+        self.borders[edge_index(edge)].wl_surface.id()
     }
 
     /// Re-layout all subsurfaces for the given content area and redraw
@@ -213,6 +243,53 @@ impl Decoration {
             |pixels, w, h| draw_titlebar(pixels, w, h, active, hover, pressed, buttons, title, pal),
         )?;
 
+        let h_span = content_width + 2 * BORDER_WIDTH;
+        let v_span = TITLEBAR_HEIGHT + content_height;
+
+        self.borders[edge_index(BorderEdge::Top)]
+            .wl_subsurface
+            .set_position(-BORDER_WIDTH, -TITLEBAR_HEIGHT - BORDER_WIDTH);
+        render_invisible_border(
+            &mut self.borders[edge_index(BorderEdge::Top)],
+            shm,
+            qh,
+            h_span,
+            BORDER_WIDTH,
+        )?;
+
+        self.borders[edge_index(BorderEdge::Bottom)]
+            .wl_subsurface
+            .set_position(-BORDER_WIDTH, content_height);
+        render_invisible_border(
+            &mut self.borders[edge_index(BorderEdge::Bottom)],
+            shm,
+            qh,
+            h_span,
+            BORDER_WIDTH,
+        )?;
+
+        self.borders[edge_index(BorderEdge::Left)]
+            .wl_subsurface
+            .set_position(-BORDER_WIDTH, -TITLEBAR_HEIGHT);
+        render_invisible_border(
+            &mut self.borders[edge_index(BorderEdge::Left)],
+            shm,
+            qh,
+            BORDER_WIDTH,
+            v_span,
+        )?;
+
+        self.borders[edge_index(BorderEdge::Right)]
+            .wl_subsurface
+            .set_position(content_width, -TITLEBAR_HEIGHT);
+        render_invisible_border(
+            &mut self.borders[edge_index(BorderEdge::Right)],
+            shm,
+            qh,
+            BORDER_WIDTH,
+            v_span,
+        )?;
+
         Ok(())
     }
 
@@ -231,6 +308,15 @@ impl Decoration {
             }
         }
         None
+    }
+}
+
+pub(crate) fn edge_index(edge: BorderEdge) -> usize {
+    match edge {
+        BorderEdge::Top => 0,
+        BorderEdge::Bottom => 1,
+        BorderEdge::Left => 2,
+        BorderEdge::Right => 3,
     }
 }
 
@@ -319,6 +405,29 @@ where
     if width > 0 && height > 0 {
         sub.wl_surface.commit();
     }
+    Ok(())
+}
+
+fn render_invisible_border(
+    sub: &mut Subsurface,
+    shm: &WlShm,
+    qh: &QueueHandle<crate::inner::Inner>,
+    width: i32,
+    height: i32,
+) -> Result<()> {
+    if width <= 0 || height <= 0 {
+        return Ok(());
+    }
+    paint_subsurface(
+        sub,
+        shm,
+        qh,
+        width,
+        height,
+        Format::Argb8888,
+        |pixels, _w, _h| pixels.fill(0),
+    )?;
+    sub.wl_surface.commit();
     Ok(())
 }
 

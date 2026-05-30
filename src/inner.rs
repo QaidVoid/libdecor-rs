@@ -46,10 +46,10 @@ use wayland_protocols::xdg::shell::client::{
 };
 
 use crate::configuration::Configuration;
-use crate::csd::{Decoration, TITLEBAR_HEIGHT};
+use crate::csd::{BORDER_WIDTH, CORNER_SIZE, Decoration, TITLEBAR_HEIGHT};
 use crate::event::Event;
 use crate::id::FrameId;
-use crate::input::{DecorationPart, PointerFocus, SeatState, SurfaceTarget};
+use crate::input::{BorderEdge, DecorationPart, PointerFocus, SeatState, SurfaceTarget};
 use crate::state::{Capabilities, WindowState, WmCapabilities};
 
 /// User-data attached to per-frame proxies. Carries the frame slot key
@@ -110,7 +110,12 @@ impl FrameSlot {
     /// active.
     pub(crate) fn decoration_overhead(&self) -> (i32, i32, i32, i32) {
         if self.csd.is_some() {
-            (TITLEBAR_HEIGHT, 0, 0, 0)
+            (
+                TITLEBAR_HEIGHT + BORDER_WIDTH,
+                BORDER_WIDTH,
+                BORDER_WIDTH,
+                BORDER_WIDTH,
+            )
         } else {
             (0, 0, 0, 0)
         }
@@ -413,7 +418,21 @@ impl Dispatch<WlPointer, ()> for Inner {
                             button_down: false,
                         },
                     );
-                    apply_cursor_shape(state, &pointer_id, target.part, serial);
+                    let (cw, ch) = state
+                        .frames
+                        .get(&target.frame.0)
+                        .map(|s| s.content_size)
+                        .unwrap_or((0, 0));
+                    apply_cursor_shape(
+                        state,
+                        &pointer_id,
+                        target.part,
+                        surface_x,
+                        surface_y,
+                        cw,
+                        ch,
+                        serial,
+                    );
                     if target.part == DecorationPart::Titlebar {
                         update_titlebar_hover(state, target.frame, surface_x, surface_y);
                     }
@@ -454,10 +473,35 @@ impl Dispatch<WlPointer, ()> for Inner {
                     focus.y = surface_y;
                     focus.target
                 });
-                if let Some(target) = target
-                    && target.part == DecorationPart::Titlebar
-                {
-                    update_titlebar_hover(state, target.frame, surface_x, surface_y);
+                if let Some(target) = target {
+                    match target.part {
+                        DecorationPart::Titlebar => {
+                            update_titlebar_hover(state, target.frame, surface_x, surface_y);
+                        }
+                        DecorationPart::Border(_) => {
+                            let serial = state
+                                .pointer_focus
+                                .get(&pointer_id)
+                                .map(|f| f.serial)
+                                .unwrap_or(0);
+                            let (cw, ch) = state
+                                .frames
+                                .get(&target.frame.0)
+                                .map(|s| s.content_size)
+                                .unwrap_or((0, 0));
+                            apply_cursor_shape(
+                                state,
+                                &pointer_id,
+                                target.part,
+                                surface_x,
+                                surface_y,
+                                cw,
+                                ch,
+                                serial,
+                            );
+                        }
+                        DecorationPart::Content => {}
+                    }
                 }
             }
             wl_pointer::Event::Button {
@@ -487,6 +531,19 @@ impl Dispatch<WlPointer, ()> for Inner {
                             handle_titlebar_release(state, target.frame, x, y);
                         }
                     }
+                    DecorationPart::Border(edge) => {
+                        if pressed {
+                            handle_border_press(
+                                state,
+                                target.frame,
+                                &pointer_id,
+                                edge,
+                                x,
+                                y,
+                                serial,
+                            );
+                        }
+                    }
                     DecorationPart::Content => {}
                 }
             }
@@ -495,7 +552,17 @@ impl Dispatch<WlPointer, ()> for Inner {
     }
 }
 
-fn apply_cursor_shape(state: &Inner, pointer_id: &ObjectId, part: DecorationPart, serial: u32) {
+#[allow(clippy::too_many_arguments)]
+fn apply_cursor_shape(
+    state: &Inner,
+    pointer_id: &ObjectId,
+    part: DecorationPart,
+    x: f64,
+    y: f64,
+    content_w: i32,
+    content_h: i32,
+    serial: u32,
+) {
     let Some(handle) = state.seats.values().find(|h| {
         h.input
             .pointer
@@ -508,9 +575,48 @@ fn apply_cursor_shape(state: &Inner, pointer_id: &ObjectId, part: DecorationPart
     let Some(device) = handle.input.cursor_shape.as_ref() else {
         return;
     };
+    let h_span = (content_w + 2 * BORDER_WIDTH) as f64;
+    let v_span = (TITLEBAR_HEIGHT + content_h) as f64;
+    let cs = CORNER_SIZE as f64;
     let shape = match part {
         DecorationPart::Titlebar | DecorationPart::Content => {
             wp_cursor_shape_device_v1::Shape::Default
+        }
+        DecorationPart::Border(BorderEdge::Top) => {
+            if x < cs {
+                wp_cursor_shape_device_v1::Shape::NwResize
+            } else if x >= h_span - cs {
+                wp_cursor_shape_device_v1::Shape::NeResize
+            } else {
+                wp_cursor_shape_device_v1::Shape::NResize
+            }
+        }
+        DecorationPart::Border(BorderEdge::Bottom) => {
+            if x < cs {
+                wp_cursor_shape_device_v1::Shape::SwResize
+            } else if x >= h_span - cs {
+                wp_cursor_shape_device_v1::Shape::SeResize
+            } else {
+                wp_cursor_shape_device_v1::Shape::SResize
+            }
+        }
+        DecorationPart::Border(BorderEdge::Left) => {
+            if y < cs {
+                wp_cursor_shape_device_v1::Shape::NwResize
+            } else if y >= v_span - cs {
+                wp_cursor_shape_device_v1::Shape::SwResize
+            } else {
+                wp_cursor_shape_device_v1::Shape::WResize
+            }
+        }
+        DecorationPart::Border(BorderEdge::Right) => {
+            if y < cs {
+                wp_cursor_shape_device_v1::Shape::NeResize
+            } else if y >= v_span - cs {
+                wp_cursor_shape_device_v1::Shape::SeResize
+            } else {
+                wp_cursor_shape_device_v1::Shape::EResize
+            }
         }
     };
     device.set_shape(serial, shape);
@@ -625,6 +731,81 @@ fn handle_titlebar_release(state: &mut Inner, frame_id: FrameId, x: f64, y: f64)
             }
         }
     }
+}
+
+fn handle_border_press(
+    state: &mut Inner,
+    frame_id: FrameId,
+    pointer_id: &ObjectId,
+    edge: BorderEdge,
+    x: f64,
+    y: f64,
+    serial: u32,
+) {
+    let slot = state.frames.get(&frame_id.0);
+    let (content_w, content_h) = match slot {
+        Some(s) => s.content_size,
+        None => return,
+    };
+    let seat = state
+        .seats
+        .values()
+        .find(|h| {
+            h.input
+                .pointer
+                .as_ref()
+                .map(|p| p.id() == *pointer_id)
+                .unwrap_or(false)
+        })
+        .map(|h| h.seat.clone());
+    let Some(seat) = seat else {
+        return;
+    };
+    let Some(slot) = state.frames.get(&frame_id.0) else {
+        return;
+    };
+    let h_span = (content_w + 2 * BORDER_WIDTH) as f64;
+    let v_span = (TITLEBAR_HEIGHT + content_h) as f64;
+    let cs = CORNER_SIZE as f64;
+    let xdg_edge = match edge {
+        BorderEdge::Top => {
+            if x < cs {
+                xdg_toplevel::ResizeEdge::TopLeft
+            } else if x >= h_span - cs {
+                xdg_toplevel::ResizeEdge::TopRight
+            } else {
+                xdg_toplevel::ResizeEdge::Top
+            }
+        }
+        BorderEdge::Bottom => {
+            if x < cs {
+                xdg_toplevel::ResizeEdge::BottomLeft
+            } else if x >= h_span - cs {
+                xdg_toplevel::ResizeEdge::BottomRight
+            } else {
+                xdg_toplevel::ResizeEdge::Bottom
+            }
+        }
+        BorderEdge::Left => {
+            if y < cs {
+                xdg_toplevel::ResizeEdge::TopLeft
+            } else if y >= v_span - cs {
+                xdg_toplevel::ResizeEdge::BottomLeft
+            } else {
+                xdg_toplevel::ResizeEdge::Left
+            }
+        }
+        BorderEdge::Right => {
+            if y < cs {
+                xdg_toplevel::ResizeEdge::TopRight
+            } else if y >= v_span - cs {
+                xdg_toplevel::ResizeEdge::BottomRight
+            } else {
+                xdg_toplevel::ResizeEdge::Right
+            }
+        }
+    };
+    slot.xdg_toplevel.resize(&seat, serial, xdg_edge);
 }
 
 fn decode_states(raw: &[u8]) -> WindowState {
@@ -798,6 +979,21 @@ pub(crate) fn ensure_csd(state: &mut Inner, frame_id: FrameId) -> bool {
             part: DecorationPart::Titlebar,
         },
     );
+    for edge in [
+        BorderEdge::Top,
+        BorderEdge::Bottom,
+        BorderEdge::Left,
+        BorderEdge::Right,
+    ] {
+        let id = dec.border_surface_id(edge);
+        state.surface_targets.insert(
+            id,
+            SurfaceTarget {
+                frame: frame_id,
+                part: DecorationPart::Border(edge),
+            },
+        );
+    }
     state.frames.get_mut(&key).unwrap().csd = Some(dec);
     true
 }
