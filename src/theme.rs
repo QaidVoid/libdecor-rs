@@ -1,7 +1,7 @@
 //! System theme detection and colour palette selection.
 //!
 //! Determines whether the desktop prefers a dark or light appearance
-//! without linking against D-Bus.  GNOME's theme preference lives in
+//! without linking against D-Bus. GNOME's theme preference lives in
 //! GSettings / dconf, so we shell out to `gsettings` (a tiny CLI that
 //! every GNOME installation has) rather than pulling in a D-Bus library.
 //!
@@ -17,6 +17,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
 /// Colour palette for CSD rendering.
 ///
@@ -66,102 +67,93 @@ pub(crate) const LIGHT: Palette = Palette {
 };
 
 /// Return the palette that best matches the current desktop theme.
+///
+/// Detection runs once per process; subsequent calls return the cached
+/// result so repeated window creation does not re-spawn `gsettings`.
 pub(crate) fn palette() -> &'static Palette {
-    if prefer_dark() { &DARK } else { &LIGHT }
+    static IS_DARK: OnceLock<bool> = OnceLock::new();
+    if *IS_DARK.get_or_init(prefer_dark) {
+        &DARK
+    } else {
+        &LIGHT
+    }
 }
 
 fn prefer_dark() -> bool {
     if let Ok(theme) = env::var("GTK_THEME") {
         return theme.to_ascii_lowercase().contains("dark");
     }
-
     if let Some(dark) = gnome_color_scheme() {
         return dark;
     }
-
-    if gtk_prefer_dark() {
-        return true;
+    if let Some(dark) = gtk_ini_prefer_dark() {
+        return dark;
     }
-
     true
 }
 
-/// Ask `gsettings` for GNOME's colour-scheme or theme preference.
-///
-/// Returns `Some(bool)` when GNOME gave a definitive answer,
-/// `None` when `gsettings` is unavailable or returned nothing useful.
+/// Ask `gsettings` for GNOME's colour-scheme preference, falling back to
+/// the older `gtk-theme` key if `color-scheme` is unset (pre-GNOME 42).
 fn gnome_color_scheme() -> Option<bool> {
-    let out = Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
-        .output()
-        .ok();
-
-    if let Some(out) = &out
-        && out.status.success()
-    {
-        let val = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .to_ascii_lowercase();
-        if val.contains("dark") {
-            return Some(true);
-        }
-        if val.contains("light") || val == "'default'" || val == "default" || val == "''" {
-            return Some(false);
-        }
-    }
-
-    let out = Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
-        .output()
-        .ok();
-
-    if let Some(out) = &out
-        && out.status.success()
-    {
-        let val = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .to_ascii_lowercase();
-        if val.contains("dark") {
-            return Some(true);
-        }
-        if !val.is_empty() {
-            return Some(false);
-        }
-    }
-
-    None
+    gsettings_dark("color-scheme").or_else(|| gsettings_dark("gtk-theme"))
 }
 
-/// Check GTK settings INI files for a dark-theme preference.
-fn gtk_prefer_dark() -> bool {
+/// Read a single `org.gnome.desktop.interface` key via `gsettings` and
+/// classify its value as dark/light. Returns `None` when `gsettings` is
+/// unavailable, the schema/key is missing, or the value is empty.
+fn gsettings_dark(key: &str) -> Option<bool> {
+    let out = Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", key])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let val = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .trim_matches('\'')
+        .to_ascii_lowercase();
+    if val.is_empty() || val == "default" {
+        return Some(false);
+    }
+    Some(val.contains("dark"))
+}
+
+/// Walk GTK 3/4 `settings.ini` for an explicit dark-theme preference.
+/// Returns `None` when no relevant key is present.
+fn gtk_ini_prefer_dark() -> Option<bool> {
     for config_dir in xdg_config_dirs() {
         for ver in &["gtk-4.0", "gtk-3.0"] {
             let path = config_dir.join(ver).join("settings.ini");
             if let Ok(content) = fs::read_to_string(&path)
-                && ini_contains_dark_preference(&content)
+                && let Some(dark) = parse_gtk_ini(&content)
             {
-                return true;
+                return Some(dark);
             }
         }
     }
-    false
+    None
 }
 
-fn ini_contains_dark_preference(content: &str) -> bool {
+/// `gtk-application-prefer-dark-theme=1` is authoritative; otherwise
+/// infer from `gtk-theme-name` containing "dark".
+fn parse_gtk_ini(content: &str) -> Option<bool> {
+    let mut from_theme_name = None;
     for line in content.lines() {
         let line = line.trim();
-        if let Some((key, value)) = line.split_once('=') {
-            let key = key.trim();
-            let value = value.trim().to_ascii_lowercase();
-            if key == "gtk-application-prefer-dark-theme" && value == "1" {
-                return true;
-            }
-            if key == "gtk-theme-name" && value.contains("dark") {
-                return true;
-            }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim().to_ascii_lowercase();
+        if key == "gtk-application-prefer-dark-theme" {
+            return Some(value == "1");
+        }
+        if key == "gtk-theme-name" {
+            from_theme_name = Some(value.contains("dark"));
         }
     }
-    false
+    from_theme_name
 }
 
 /// Return the XDG config directories in priority order:

@@ -52,7 +52,10 @@ pub(crate) enum ButtonKind {
 
 /// CSD state attached to a frame whose decorations libdecor draws.
 pub(crate) struct Decoration {
-    /// Shadow subsurface, stacked below all other decoration surfaces.
+    /// Drop-shadow subsurface. Stacked above the resize borders and
+    /// below the titlebar; click-through via an empty input region so
+    /// pointer events on the shadow's footprint still reach the
+    /// border surfaces underneath.
     pub(crate) shadow: Subsurface,
     pub(crate) titlebar: Subsurface,
     /// Invisible resize grips: indexed by [`BorderEdge`] in the order
