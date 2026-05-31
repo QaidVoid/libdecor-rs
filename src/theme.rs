@@ -83,19 +83,13 @@ fn prefer_dark() -> bool {
     if let Ok(theme) = env::var("GTK_THEME") {
         return theme.to_ascii_lowercase().contains("dark");
     }
-    if let Some(dark) = gnome_color_scheme() {
+    if let Some(dark) = gsettings_dark("color-scheme").or_else(|| gsettings_dark("gtk-theme")) {
         return dark;
     }
     if let Some(dark) = gtk_ini_prefer_dark() {
         return dark;
     }
     true
-}
-
-/// Ask `gsettings` for GNOME's colour-scheme preference, falling back to
-/// the older `gtk-theme` key if `color-scheme` is unset (pre-GNOME 42).
-fn gnome_color_scheme() -> Option<bool> {
-    gsettings_dark("color-scheme").or_else(|| gsettings_dark("gtk-theme"))
 }
 
 /// Read a single `org.gnome.desktop.interface` key via `gsettings` and
