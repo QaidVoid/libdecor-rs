@@ -46,7 +46,7 @@ use wayland_protocols::xdg::shell::client::{
 };
 
 use crate::configuration::Configuration;
-use crate::csd::{BORDER_WIDTH, Decoration, TITLEBAR_HEIGHT};
+use crate::csd::{BORDER_WIDTH, CORNER_SIZE, Decoration, TITLEBAR_HEIGHT};
 use crate::event::Event;
 use crate::id::FrameId;
 use crate::input::{BorderEdge, DecorationPart, PointerFocus, SeatState, SurfaceTarget};
@@ -121,8 +121,8 @@ impl FrameSlot {
         }
     }
 
-    /// Vertical decoration above the content surface (titlebar + top
-    /// border, when CSD is active).
+    /// Vertical decoration above the content surface (titlebar, when
+    /// CSD is active).
     pub(crate) fn top_decoration(&self) -> i32 {
         self.decoration_overhead().0
     }
@@ -418,7 +418,21 @@ impl Dispatch<WlPointer, ()> for Inner {
                             button_down: false,
                         },
                     );
-                    apply_cursor_shape(state, &pointer_id, target.part, serial);
+                    let (cw, ch) = state
+                        .frames
+                        .get(&target.frame.0)
+                        .map(|s| s.content_size)
+                        .unwrap_or((0, 0));
+                    apply_cursor_shape(
+                        state,
+                        &pointer_id,
+                        target.part,
+                        surface_x,
+                        surface_y,
+                        cw,
+                        ch,
+                        serial,
+                    );
                     if target.part == DecorationPart::Titlebar {
                         update_titlebar_hover(state, target.frame, surface_x, surface_y);
                     }
@@ -444,14 +458,7 @@ impl Dispatch<WlPointer, ()> for Inner {
                         if let Some(dec) = slot.csd.as_mut() {
                             dec.hover = None;
                             dec.pressed = None;
-                            let _ = dec.render(
-                                &state.compositor,
-                                &state.shm,
-                                &state.qh,
-                                cw,
-                                ch,
-                                title.as_deref(),
-                            );
+                            let _ = dec.render(&state.shm, &state.qh, cw, ch, title.as_deref());
                         }
                     }
                 }
@@ -466,10 +473,35 @@ impl Dispatch<WlPointer, ()> for Inner {
                     focus.y = surface_y;
                     focus.target
                 });
-                if let Some(target) = target
-                    && target.part == DecorationPart::Titlebar
-                {
-                    update_titlebar_hover(state, target.frame, surface_x, surface_y);
+                if let Some(target) = target {
+                    match target.part {
+                        DecorationPart::Titlebar => {
+                            update_titlebar_hover(state, target.frame, surface_x, surface_y);
+                        }
+                        DecorationPart::Border(_) => {
+                            let serial = state
+                                .pointer_focus
+                                .get(&pointer_id)
+                                .map(|f| f.serial)
+                                .unwrap_or(0);
+                            let (cw, ch) = state
+                                .frames
+                                .get(&target.frame.0)
+                                .map(|s| s.content_size)
+                                .unwrap_or((0, 0));
+                            apply_cursor_shape(
+                                state,
+                                &pointer_id,
+                                target.part,
+                                surface_x,
+                                surface_y,
+                                cw,
+                                ch,
+                                serial,
+                            );
+                        }
+                        DecorationPart::Content => {}
+                    }
                 }
             }
             wl_pointer::Event::Button {
@@ -501,7 +533,15 @@ impl Dispatch<WlPointer, ()> for Inner {
                     }
                     DecorationPart::Border(edge) => {
                         if pressed {
-                            handle_border_press(state, target.frame, &pointer_id, edge, serial);
+                            handle_border_press(
+                                state,
+                                target.frame,
+                                &pointer_id,
+                                edge,
+                                x,
+                                y,
+                                serial,
+                            );
                         }
                     }
                     DecorationPart::Content => {}
@@ -512,7 +552,17 @@ impl Dispatch<WlPointer, ()> for Inner {
     }
 }
 
-fn apply_cursor_shape(state: &Inner, pointer_id: &ObjectId, part: DecorationPart, serial: u32) {
+#[allow(clippy::too_many_arguments)]
+fn apply_cursor_shape(
+    state: &Inner,
+    pointer_id: &ObjectId,
+    part: DecorationPart,
+    x: f64,
+    y: f64,
+    content_w: i32,
+    content_h: i32,
+    serial: u32,
+) {
     let Some(handle) = state.seats.values().find(|h| {
         h.input
             .pointer
@@ -525,15 +575,48 @@ fn apply_cursor_shape(state: &Inner, pointer_id: &ObjectId, part: DecorationPart
     let Some(device) = handle.input.cursor_shape.as_ref() else {
         return;
     };
+    let h_span = (content_w + 2 * BORDER_WIDTH) as f64;
+    let v_span = (TITLEBAR_HEIGHT + content_h) as f64;
+    let cs = CORNER_SIZE as f64;
     let shape = match part {
         DecorationPart::Titlebar | DecorationPart::Content => {
             wp_cursor_shape_device_v1::Shape::Default
         }
-        DecorationPart::Border(BorderEdge::Top) | DecorationPart::Border(BorderEdge::Bottom) => {
-            wp_cursor_shape_device_v1::Shape::NsResize
+        DecorationPart::Border(BorderEdge::Top) => {
+            if x < cs {
+                wp_cursor_shape_device_v1::Shape::NwResize
+            } else if x >= h_span - cs {
+                wp_cursor_shape_device_v1::Shape::NeResize
+            } else {
+                wp_cursor_shape_device_v1::Shape::NResize
+            }
         }
-        DecorationPart::Border(BorderEdge::Left) | DecorationPart::Border(BorderEdge::Right) => {
-            wp_cursor_shape_device_v1::Shape::EwResize
+        DecorationPart::Border(BorderEdge::Bottom) => {
+            if x < cs {
+                wp_cursor_shape_device_v1::Shape::SwResize
+            } else if x >= h_span - cs {
+                wp_cursor_shape_device_v1::Shape::SeResize
+            } else {
+                wp_cursor_shape_device_v1::Shape::SResize
+            }
+        }
+        DecorationPart::Border(BorderEdge::Left) => {
+            if y < cs {
+                wp_cursor_shape_device_v1::Shape::NwResize
+            } else if y >= v_span - cs {
+                wp_cursor_shape_device_v1::Shape::SwResize
+            } else {
+                wp_cursor_shape_device_v1::Shape::WResize
+            }
+        }
+        DecorationPart::Border(BorderEdge::Right) => {
+            if y < cs {
+                wp_cursor_shape_device_v1::Shape::NeResize
+            } else if y >= v_span - cs {
+                wp_cursor_shape_device_v1::Shape::SeResize
+            } else {
+                wp_cursor_shape_device_v1::Shape::EResize
+            }
         }
     };
     device.set_shape(serial, shape);
@@ -552,7 +635,6 @@ fn update_titlebar_hover(state: &mut Inner, frame_id: FrameId, x: f64, y: f64) {
     if new_hover != dec.hover {
         dec.hover = new_hover;
         let _ = dec.render(
-            &state.compositor,
             &state.shm,
             &state.qh,
             content_w,
@@ -582,7 +664,6 @@ fn handle_titlebar_press(
         let hit = dec.hit_test(x, y);
         dec.pressed = hit;
         let _ = dec.render(
-            &state.compositor,
             &state.shm,
             &state.qh,
             content_w,
@@ -624,7 +705,6 @@ fn handle_titlebar_release(state: &mut Inner, frame_id: FrameId, x: f64, y: f64)
     let released_on = dec.hit_test(x, y);
     let pressed = dec.pressed.take();
     let _ = dec.render(
-        &state.compositor,
         &state.shm,
         &state.qh,
         content_w,
@@ -658,8 +738,15 @@ fn handle_border_press(
     frame_id: FrameId,
     pointer_id: &ObjectId,
     edge: BorderEdge,
+    x: f64,
+    y: f64,
     serial: u32,
 ) {
+    let slot = state.frames.get(&frame_id.0);
+    let (content_w, content_h) = match slot {
+        Some(s) => s.content_size,
+        None => return,
+    };
     let seat = state
         .seats
         .values()
@@ -677,11 +764,46 @@ fn handle_border_press(
     let Some(slot) = state.frames.get(&frame_id.0) else {
         return;
     };
+    let h_span = (content_w + 2 * BORDER_WIDTH) as f64;
+    let v_span = (TITLEBAR_HEIGHT + content_h) as f64;
+    let cs = CORNER_SIZE as f64;
     let xdg_edge = match edge {
-        BorderEdge::Top => xdg_toplevel::ResizeEdge::Top,
-        BorderEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
-        BorderEdge::Left => xdg_toplevel::ResizeEdge::Left,
-        BorderEdge::Right => xdg_toplevel::ResizeEdge::Right,
+        BorderEdge::Top => {
+            if x < cs {
+                xdg_toplevel::ResizeEdge::TopLeft
+            } else if x >= h_span - cs {
+                xdg_toplevel::ResizeEdge::TopRight
+            } else {
+                xdg_toplevel::ResizeEdge::Top
+            }
+        }
+        BorderEdge::Bottom => {
+            if x < cs {
+                xdg_toplevel::ResizeEdge::BottomLeft
+            } else if x >= h_span - cs {
+                xdg_toplevel::ResizeEdge::BottomRight
+            } else {
+                xdg_toplevel::ResizeEdge::Bottom
+            }
+        }
+        BorderEdge::Left => {
+            if y < cs {
+                xdg_toplevel::ResizeEdge::TopLeft
+            } else if y >= v_span - cs {
+                xdg_toplevel::ResizeEdge::BottomLeft
+            } else {
+                xdg_toplevel::ResizeEdge::Left
+            }
+        }
+        BorderEdge::Right => {
+            if y < cs {
+                xdg_toplevel::ResizeEdge::TopRight
+            } else if y >= v_span - cs {
+                xdg_toplevel::ResizeEdge::BottomRight
+            } else {
+                xdg_toplevel::ResizeEdge::Right
+            }
+        }
     };
     slot.xdg_toplevel.resize(&seat, serial, xdg_edge);
 }
@@ -842,7 +964,13 @@ pub(crate) fn ensure_csd(state: &mut Inner, frame_id: FrameId) -> bool {
         return false;
     };
     let parent = state.frames.get(&key).unwrap().wl_surface.clone();
-    let dec = Decoration::new(&state.compositor, &subcompositor, &parent, &state.qh);
+    let dec = Decoration::new(
+        &state.compositor,
+        &subcompositor,
+        &parent,
+        &state.qh,
+        crate::theme::palette(),
+    );
     let titlebar_id = dec.titlebar_surface_id();
     state.surface_targets.insert(
         titlebar_id,

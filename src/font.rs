@@ -311,7 +311,7 @@ fn draw_with<F: Font>(
                 let r = (fg_rgb.0 as f32 * alpha + bg_r as f32 * inv) as u32;
                 let g = (fg_rgb.1 as f32 * alpha + bg_g as f32 * inv) as u32;
                 let b = (fg_rgb.2 as f32 * alpha + bg_b as f32 * inv) as u32;
-                pixels[idx] = (r << 16) | (g << 8) | b;
+                pixels[idx] = (0xff << 24) | (r << 16) | (g << 8) | b;
             });
         }
         cursor += scaled.h_advance(glyph_id);

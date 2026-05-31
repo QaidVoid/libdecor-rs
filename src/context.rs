@@ -12,6 +12,7 @@ use wayland_client::globals::registry_queue_init;
 use wayland_client::{Connection, EventQueue};
 use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1;
 
+use crate::csd::edge_index;
 use crate::error::{Error, Result};
 use crate::event::Event;
 use crate::frame::Frame;
@@ -19,7 +20,7 @@ use crate::id::FrameId;
 use crate::inner::{
     FrameKey, FrameSlot, Inner, PendingConfigure, bind, register_surface, unregister_surface,
 };
-use crate::input::{DecorationPart, SurfaceTarget};
+use crate::input::{BorderEdge, DecorationPart, SurfaceTarget};
 use crate::state::{Capabilities, WindowState, WmCapabilities};
 
 /// libdecor context: a Wayland connection plus the bookkeeping required
@@ -270,8 +271,13 @@ impl Context {
         let slot = self.inner.frames.remove(&id.0).ok_or(Error::UnknownFrame)?;
         if let Some(csd) = slot.csd {
             unregister_surface(&mut self.inner, &csd.titlebar.wl_surface);
-            for border in &csd.borders {
-                unregister_surface(&mut self.inner, &border.wl_surface);
+            for edge in [
+                BorderEdge::Top,
+                BorderEdge::Bottom,
+                BorderEdge::Left,
+                BorderEdge::Right,
+            ] {
+                unregister_surface(&mut self.inner, &csd.borders[edge_index(edge)].wl_surface);
             }
             csd.destroy();
         }
