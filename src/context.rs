@@ -169,6 +169,18 @@ impl Context {
         Ok(())
     }
 
+    /// Flush outgoing requests and dispatch any events that are already
+    /// queued on libdecor's event queue, without blocking or reading the
+    /// socket. Returns the number of events dispatched.
+    ///
+    /// This is the building block used by the C ABI shim, which relies on
+    /// the application (and Mesa) to read the Wayland socket and only needs
+    /// to drain events libwayland has already routed to this queue.
+    pub fn dispatch_pending(&mut self) -> Result<usize> {
+        self.queue.flush()?;
+        Ok(self.queue.dispatch_pending(&mut self.inner)?)
+    }
+
     /// Pull the next pending frame event, if any.
     pub fn poll_event(&mut self) -> Option<Event> {
         self.inner.events.pop_front()

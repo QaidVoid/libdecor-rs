@@ -3,13 +3,10 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use core::time::Duration;
-use std::os::fd::AsFd;
-use std::os::fd::AsRawFd;
 
-use libdecor_rs::Event;
-
-use crate::frame::{free_frame_box, invoke_close, invoke_configure};
-use crate::types::{ConfigurationBox, ContextBox, FrameBox, libdecor, libdecor_interface};
+use crate::dispatch::ContextHandle;
+use crate::frame::free_frame_box;
+use crate::types::{ContextBox, FrameBox, libdecor, libdecor_interface};
 
 /// Create a new libdecor context for the given `*mut wl_display`.
 ///
@@ -53,16 +50,28 @@ pub unsafe extern "C" fn libdecor_new_with_user_data(
         Err(_) => return core::ptr::null_mut(),
     };
 
+    // Spawn the worker that services libdecor's private queue.
+    let handle = match ContextHandle::new(ctx) {
+        Ok(h) => h,
+        Err(_) => return core::ptr::null_mut(),
+    };
+
     let boxed = ContextBox {
-        rust: ctx,
+        rust: handle,
         iface: iface_nn,
         user_data,
         refs: 1,
+        pump: core::ptr::null_mut(),
         frames: std::collections::HashMap::new(),
         handle_application_cursor: false,
         title_cache: std::collections::HashMap::new(),
     };
-    boxed.into_raw()
+    let raw = boxed.into_raw();
+    // Arm the default-queue delivery pump now that the box has a stable
+    // address (the pump callback's user_data points back at it).
+    let ctx_ptr = raw.cast::<ContextBox>();
+    unsafe { (*ctx_ptr).pump = crate::pump::create(ctx_ptr, display) };
+    raw
 }
 
 /// Decrement the context's reference count. The context (and any
@@ -79,10 +88,19 @@ pub unsafe extern "C" fn libdecor_unref(ctx: *mut libdecor) {
     };
     boxed.refs = boxed.refs.saturating_sub(1);
     if boxed.refs == 0 {
+        // Stop the worker first: the application may disconnect the display
+        // immediately after this returns (the mesa close callback does),
+        // and the worker must not be touching it.
+        boxed.rust.shutdown();
+        // Detach the default-queue pump. When we are unwinding through the
+        // pump's own callback, this keeps the pump alive for it to finish.
+        unsafe { crate::pump::detach(boxed) };
         let frames: Vec<NonNull<FrameBox>> = boxed.frames.values().copied().collect();
         for frame in frames {
             unsafe { free_frame_box(frame) };
         }
+        // Drop the box (and its Wayland-owning Context) synchronously,
+        // while the display is still valid.
         drop(unsafe { Box::from_raw(ctx.cast::<ContextBox>()) });
     }
 }
@@ -112,7 +130,14 @@ pub unsafe extern "C" fn libdecor_set_user_data(ctx: *mut libdecor, user_data: *
     }
 }
 
-/// Return the Wayland connection file descriptor.
+/// Return the Wayland socket file descriptor, mirroring upstream
+/// libdecor.
+///
+/// Applications that poll this and call [`libdecor_dispatch`] when it is
+/// readable work as they would with upstream libdecor. Applications that
+/// never do (some, like mesa's `eglut`, don't) are still served: libdecor
+/// delivers events from the application's own default-queue dispatch via
+/// [`crate::pump`].
 ///
 /// # Safety
 ///
@@ -120,7 +145,7 @@ pub unsafe extern "C" fn libdecor_set_user_data(ctx: *mut libdecor, user_data: *
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_get_fd(ctx: *mut libdecor) -> c_int {
     match unsafe { ContextBox::as_mut(ctx) } {
-        Some(b) => b.rust.as_fd().as_raw_fd(),
+        Some(b) => b.rust.socket_fd(),
         None => -1,
     }
 }
@@ -146,40 +171,15 @@ pub unsafe extern "C" fn libdecor_dispatch(ctx: *mut libdecor, timeout: c_int) -
         Some(Duration::from_millis(timeout as u64))
     };
 
-    if let Err(_e) = boxed.rust.dispatch(timeout) {
-        return -1;
-    }
-
-    let mut dispatched: c_int = 0;
-    while let Some(event) = boxed.rust.poll_event() {
-        match event {
-            Event::Configure {
-                frame,
-                configuration,
-            } => {
-                let Some(frame_ptr) = boxed.frames.get(&frame).copied() else {
-                    continue;
-                };
-                let cfg = ConfigurationBox {
-                    rust: configuration,
-                }
-                .into_raw();
-                unsafe { invoke_configure(frame_ptr, cfg) };
-                let _ = unsafe { Box::from_raw(cfg.cast::<ConfigurationBox>()) };
-                dispatched += 1;
-            }
-            Event::Close { frame } => {
-                if let Some(frame_ptr) = boxed.frames.get(&frame).copied() {
-                    unsafe { invoke_close(frame_ptr) };
-                    dispatched += 1;
-                }
-            }
-            Event::Commit { frame: _ } | Event::DismissPopup { .. } | Event::Bounds { .. } => {
-                // Not currently produced by our event source.
-            }
-        }
-    }
-    dispatched
+    // Read the socket, dispatch the private queue, and deliver. This is
+    // what services the application's initial `while (!configured)` loop,
+    // which spins on `libdecor_dispatch` before it ever pumps the default
+    // queue (so the pump cannot fire yet). In the main loop the pump takes
+    // over; whichever drains first wins, so events are delivered exactly
+    // once. The events are collected before invoking callbacks so each may
+    // freely re-enter the C ABI.
+    let events = boxed.rust.dispatch_read(timeout);
+    unsafe { crate::pump::deliver_events(boxed, events) }
 }
 
 /// Configure whether libdecor sets the default cursor when the pointer

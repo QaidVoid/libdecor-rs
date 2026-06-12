@@ -3,6 +3,7 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 
+use libdecor_rs::Context;
 use libdecor_rs::wayland_client::Proxy;
 use libdecor_rs::wayland_client::backend::ObjectId;
 use libdecor_rs::wayland_client::protocol::{
@@ -51,12 +52,13 @@ pub unsafe extern "C" fn libdecor_decorate(
         Ok(i) => i,
         Err(_) => return core::ptr::null_mut(),
     };
-    let wl_surface = match WlSurface::from_id(ctx.rust.connection(), id) {
+    let conn = ctx.rust.with(|c| c.connection().clone());
+    let wl_surface = match WlSurface::from_id(&conn, id) {
         Ok(s) => s,
         Err(_) => return core::ptr::null_mut(),
     };
 
-    let frame_id = match ctx.rust.decorate(wl_surface) {
+    let frame_id = match ctx.rust.with(|c| c.decorate(wl_surface)) {
         Ok(id) => id,
         Err(_) => return core::ptr::null_mut(),
     };
@@ -103,7 +105,7 @@ pub unsafe extern "C" fn libdecor_frame_unref(frame: *mut libdecor_frame) {
         let ctx = b.ctx;
         unsafe {
             (*ctx.as_ptr()).frames.remove(&frame_id);
-            let _ = (*ctx.as_ptr()).rust.destroy_frame(frame_id);
+            let _ = (*ctx.as_ptr()).rust.with(|c| c.destroy_frame(frame_id));
             free_frame_box(NonNull::new(frame.cast::<FrameBox>()).unwrap());
         }
     }
@@ -153,7 +155,7 @@ pub unsafe extern "C" fn libdecor_frame_set_user_data(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_frame_set_visibility(frame: *mut libdecor_frame, visible: bool) {
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_visibility(visible);
         }
     });
@@ -167,7 +169,7 @@ pub unsafe extern "C" fn libdecor_frame_set_visibility(frame: *mut libdecor_fram
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_frame_is_visible(frame: *mut libdecor_frame) -> bool {
     with_frame_ret(frame, false, |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.is_visible().ok())
             .unwrap_or(false)
@@ -186,7 +188,7 @@ pub unsafe extern "C" fn libdecor_frame_set_parent(
 ) {
     let parent_id = unsafe { FrameBox::as_mut(parent) }.map(|p| p.id);
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_parent(parent_id);
         }
     });
@@ -210,7 +212,7 @@ pub unsafe extern "C" fn libdecor_frame_set_title(
         Err(_) => return,
     };
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_title(&title_str);
         }
     });
@@ -231,8 +233,7 @@ pub unsafe extern "C" fn libdecor_frame_get_title(frame: *mut libdecor_frame) ->
     let id = b.id;
     let title = ctx
         .rust
-        .frame(id)
-        .and_then(|f| f.title().ok().flatten().map(|s| s.to_owned()));
+        .with(|c| c.frame(id).and_then(|f| f.title().ok().flatten().map(|s| s.to_owned())));
     let Some(title) = title else {
         return core::ptr::null();
     };
@@ -260,7 +261,7 @@ pub unsafe extern "C" fn libdecor_frame_set_app_id(
         Err(_) => return,
     };
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_app_id(&app_id_str);
         }
     });
@@ -278,7 +279,7 @@ pub unsafe extern "C" fn libdecor_frame_set_capabilities(
 ) {
     let rcaps = capabilities_from_c(caps);
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_capabilities(rcaps);
         }
     });
@@ -296,7 +297,7 @@ pub unsafe extern "C" fn libdecor_frame_unset_capabilities(
 ) {
     let rcaps = capabilities_from_c(caps);
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.unset_capabilities(rcaps);
         }
     });
@@ -314,7 +315,7 @@ pub unsafe extern "C" fn libdecor_frame_has_capability(
 ) -> bool {
     let rcaps = capabilities_from_c(caps);
     with_frame_ret(frame, false, |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.has_capability(rcaps).ok())
             .unwrap_or(false)
@@ -331,7 +332,7 @@ pub unsafe extern "C" fn libdecor_frame_get_capabilities(
     frame: *mut libdecor_frame,
 ) -> libdecor_capabilities {
     with_frame_ret(frame, 0, |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.capabilities().ok())
             .map(capabilities_to_c)
@@ -357,7 +358,7 @@ pub unsafe extern "C" fn libdecor_frame_show_window_menu(
         return;
     };
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.show_window_menu(&seat_proxy, serial, x, y);
         }
     });
@@ -401,7 +402,7 @@ pub unsafe extern "C" fn libdecor_frame_translate_coordinate(
     frame_y: *mut c_int,
 ) {
     let (fx, fy) = with_frame_ret(frame, (surface_x, surface_y), |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.translate_coordinate(surface_x, surface_y).ok())
             .unwrap_or((surface_x, surface_y))
@@ -422,7 +423,7 @@ pub unsafe extern "C" fn libdecor_frame_set_min_content_size(
     height: c_int,
 ) {
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_min_content_size(width, height);
         }
     });
@@ -437,7 +438,7 @@ pub unsafe extern "C" fn libdecor_frame_set_max_content_size(
     height: c_int,
 ) {
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_max_content_size(width, height);
         }
     });
@@ -451,7 +452,7 @@ pub unsafe extern "C" fn libdecor_frame_get_min_content_size(
     height: *mut c_int,
 ) {
     let (w, h) = with_frame_ret(frame, (0, 0), |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.min_content_size().ok().flatten())
             .unwrap_or((0, 0))
@@ -472,7 +473,7 @@ pub unsafe extern "C" fn libdecor_frame_get_max_content_size(
     height: *mut c_int,
 ) {
     let (w, h) = with_frame_ret(frame, (0, 0), |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.max_content_size().ok().flatten())
             .unwrap_or((0, 0))
@@ -498,7 +499,7 @@ pub unsafe extern "C" fn libdecor_frame_resize(
     };
     let redge = edge.to_rust();
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.resize(&seat_proxy, serial, redge);
         }
     });
@@ -515,7 +516,7 @@ pub unsafe extern "C" fn libdecor_frame_move(
         return;
     };
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.r#move(&seat_proxy, serial);
         }
     });
@@ -534,7 +535,7 @@ pub unsafe extern "C" fn libdecor_frame_commit(
     let cfg_ref = unsafe { ConfigurationBox::as_ref(configuration) };
     let cfg_owned = cfg_ref.map(|c| c.rust.clone());
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.commit(&state_rust, cfg_owned.as_ref());
         }
     });
@@ -544,7 +545,7 @@ pub unsafe extern "C" fn libdecor_frame_commit(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_frame_set_minimized(frame: *mut libdecor_frame) {
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_minimized();
         }
     });
@@ -554,7 +555,7 @@ pub unsafe extern "C" fn libdecor_frame_set_minimized(frame: *mut libdecor_frame
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_frame_set_maximized(frame: *mut libdecor_frame) {
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_maximized();
         }
     });
@@ -564,7 +565,7 @@ pub unsafe extern "C" fn libdecor_frame_set_maximized(frame: *mut libdecor_frame
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_frame_unset_maximized(frame: *mut libdecor_frame) {
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.unset_maximized();
         }
     });
@@ -579,7 +580,7 @@ pub unsafe extern "C" fn libdecor_frame_set_fullscreen(
 ) {
     let output_proxy = unsafe { proxy_from_ptr::<WlOutput>(frame, output) };
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.set_fullscreen(output_proxy.as_ref());
         }
     });
@@ -589,7 +590,7 @@ pub unsafe extern "C" fn libdecor_frame_set_fullscreen(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_frame_unset_fullscreen(frame: *mut libdecor_frame) {
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.unset_fullscreen();
         }
     });
@@ -599,7 +600,7 @@ pub unsafe extern "C" fn libdecor_frame_unset_fullscreen(frame: *mut libdecor_fr
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_frame_is_floating(frame: *mut libdecor_frame) -> bool {
     with_frame_ret(frame, false, |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.is_floating().ok())
             .unwrap_or(false)
@@ -616,14 +617,14 @@ pub unsafe extern "C" fn libdecor_frame_close(frame: *mut libdecor_frame) {
     let ctx = unsafe { &mut *b.ctx.as_ptr() };
     let id = b.id;
     ctx.frames.remove(&id);
-    let _ = ctx.rust.destroy_frame(id);
+    let _ = ctx.rust.with(|c| c.destroy_frame(id));
 }
 
 /// Map the frame, triggering the initial configure cycle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_frame_map(frame: *mut libdecor_frame) {
     with_frame(frame, |ctx, id| {
-        if let Some(mut f) = ctx.rust.frame(id) {
+        if let Some(mut f) = ctx.frame(id) {
             let _ = f.map();
         }
     });
@@ -633,7 +634,7 @@ pub unsafe extern "C" fn libdecor_frame_map(frame: *mut libdecor_frame) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libdecor_frame_get_xdg_surface(frame: *mut libdecor_frame) -> *mut c_void {
     with_frame_ret(frame, core::ptr::null_mut(), |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.xdg_surface().ok().map(XdgSurface::id))
             .map(|id| id.as_ptr().cast::<c_void>())
@@ -647,7 +648,7 @@ pub unsafe extern "C" fn libdecor_frame_get_xdg_toplevel(
     frame: *mut libdecor_frame,
 ) -> *mut c_void {
     with_frame_ret(frame, core::ptr::null_mut(), |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.xdg_toplevel().ok().map(XdgToplevel::id))
             .map(|id| id.as_ptr().cast::<c_void>())
@@ -661,7 +662,7 @@ pub unsafe extern "C" fn libdecor_frame_get_wm_capabilities(
     frame: *mut libdecor_frame,
 ) -> libdecor_wm_capabilities {
     with_frame_ret(frame, 0, |ctx, id| {
-        ctx.rust
+        ctx
             .frame(id)
             .and_then(|f| f.wm_capabilities().ok())
             .map(wm_capabilities_to_c)
@@ -676,28 +677,29 @@ unsafe fn proxy_from_ptr<P: Proxy>(frame: *mut libdecor_frame, ptr: *mut c_void)
     let b = unsafe { FrameBox::as_mut(frame) }?;
     let ctx = unsafe { &*b.ctx.as_ptr() };
     let id = unsafe { ObjectId::from_ptr(P::interface(), ptr.cast()) }.ok()?;
-    P::from_id(ctx.rust.connection(), id).ok()
+    let conn = ctx.rust.with(|c| c.connection().clone());
+    P::from_id(&conn, id).ok()
 }
 
 fn with_frame<F>(frame: *mut libdecor_frame, body: F)
 where
-    F: FnOnce(&mut ContextBox, libdecor_rs::FrameId),
+    F: FnOnce(&mut Context, libdecor_rs::FrameId),
 {
     if let Some(b) = unsafe { FrameBox::as_mut(frame) } {
         let id = b.id;
         let ctx = unsafe { &mut *b.ctx.as_ptr() };
-        body(ctx, id);
+        ctx.rust.with(|c| body(c, id));
     }
 }
 
 fn with_frame_ret<F, T>(frame: *mut libdecor_frame, fallback: T, body: F) -> T
 where
-    F: FnOnce(&mut ContextBox, libdecor_rs::FrameId) -> T,
+    F: FnOnce(&mut Context, libdecor_rs::FrameId) -> T,
 {
     if let Some(b) = unsafe { FrameBox::as_mut(frame) } {
         let id = b.id;
         let ctx = unsafe { &mut *b.ctx.as_ptr() };
-        body(ctx, id)
+        ctx.rust.with(|c| body(c, id))
     } else {
         fallback
     }

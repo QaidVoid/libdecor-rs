@@ -3,7 +3,9 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 
-use libdecor_rs::{Capabilities, Context, FrameId, State, WindowState, WmCapabilities};
+use libdecor_rs::{Capabilities, FrameId, State, WindowState, WmCapabilities};
+
+use crate::dispatch::ContextHandle;
 
 /// Opaque libdecor context. Layout-compatible with the `struct libdecor`
 /// forward declaration in `<libdecor.h>`.
@@ -150,10 +152,12 @@ pub struct libdecor_frame_interface {
 
 /// Internal context state stored behind every `*mut libdecor`.
 pub(crate) struct ContextBox {
-    pub(crate) rust: Context,
+    pub(crate) rust: ContextHandle,
     pub(crate) iface: NonNull<libdecor_interface>,
     pub(crate) user_data: *mut c_void,
     pub(crate) refs: u32,
+    /// The default-queue delivery pump, or null. See [`crate::pump`].
+    pub(crate) pump: *mut crate::pump::PumpState,
     pub(crate) frames: std::collections::HashMap<FrameId, NonNull<FrameBox>>,
     pub(crate) handle_application_cursor: bool,
     /// Owned C-string buffers backing the pointer returned from
