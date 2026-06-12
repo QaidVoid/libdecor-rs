@@ -11,6 +11,10 @@ crate-type = ["cdylib"]
 name = "decor_0"
 path = "src/lib.rs"
 
+[dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["std", "event"] }
+wayland-sys = { version = "0.31.11", features = ["client", "dlopen"] }
+
 [dependencies.libdecor_rs]
 package = "libdecor"
 path = ".."

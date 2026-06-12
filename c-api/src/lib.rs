@@ -15,7 +15,9 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod context;
+mod dispatch;
 mod frame;
+mod pump;
 mod state_config;
 mod types;
 

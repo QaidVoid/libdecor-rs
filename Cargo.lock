@@ -93,6 +93,8 @@ name = "libdecor-c"
 version = "0.1.0"
 dependencies = [
  "libdecor",
+ "rustix",
+ "wayland-sys",
 ]
 
 [[package]]
