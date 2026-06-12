@@ -1,4 +1,10 @@
 
+## 0.1.1 — 2026-06-12
+
+### Bug Fixes
+
+- Deliver decoration events without relying on libdecor_dispatch (#4)
+
 ## 0.1.0 — 2026-06-01
 
 ### Bug Fixes
