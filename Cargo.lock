@@ -79,7 +79,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libdecor"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ab_glyph",
  "rustix",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "libdecor-c"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "libdecor",
  "rustix",
